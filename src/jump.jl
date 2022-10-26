@@ -526,6 +526,7 @@ function JuMP.optimize!(
     solver_prob = "",
     file_format = MOI.FileFormats.FORMAT_AUTOMATIC,
     consider_constrained_variables = false,
+    feasibility_tol = NaN, 
 )
     if model.mode === nothing
         error(
@@ -574,6 +575,7 @@ function JuMP.optimize!(
     lower_to_sblm,
     lower_primal_dual_map,
     lower_dual_to_sblm = build_bilevel(
+        model,
         upper,
         lower,
         moi_link,
@@ -585,35 +587,14 @@ function JuMP.optimize!(
         consider_constrained_variables = consider_constrained_variables,
     )
 
-    # pass additional info (hints - not actual problem data)
-    # for lower level dual variables (start, upper hint, lower hint)
-    for (idx, info) in model.ctr_info
-        if haskey(model.ctr_lower, idx)
-            ctr = model.ctr_lower[idx]
-            # Only pass dual variable info if duals should exist. 
-            # This is not the case if constrained variables are considered during dualization: 
-            ctr_idx = JuMP.index(ctr)
-            F = MOI.get(lower, MOI.ConstraintFunction() , ctr_idx)
-            if !consider_constrained_variables || !(isa(F, MOI.VariableIndex) || isa(F, MOI.VectorOfVariables))
-                pre_duals = lower_primal_dual_map.primal_con_dual_var[ctr_idx] # vector
-                duals = map(x -> lower_dual_to_sblm[x], pre_duals)
-                pass_dual_info(single_blm, duals, info)
-            end
-        end
-    end
-    # pass lower & upper level primal variables info (upper, lower)
-    for (idx, info) in model.var_info
-        if haskey(model.var_lower, idx)
-            var = lower_to_sblm[JuMP.index(model.var_lower[idx])]
-        elseif haskey(model.var_upper, idx)
-            var = upper_to_sblm[JuMP.index(model.var_upper[idx])]
-        else
-            continue
-        end
-        pass_primal_info(single_blm, var, info)
-    end
     if length(bilevel_prob) > 0
         print_lp(single_blm, bilevel_prob, file_format)
+    end
+
+    if !isnan(feasibility_tol)
+        for (F,S) in MOI.get(single_blm, MOI.ListOfConstraintTypesPresent())
+            check_start_feasibility(single_blm, F, S, feasibility_tol)
+        end
     end
 
     sblm_to_solver = MOI.copy_to(solver, single_blm)
@@ -665,6 +646,70 @@ function JuMP.optimize!(
 
     return nothing
 end
+
+function check_start_feasibility(single_blm, F, S, feasibility_tol)
+    for ctr in MOI.get(single_blm, MOI.ListOfConstraintIndices{F,S}())
+        check_start_feasibility(single_blm, ctr, F, S, feasibility_tol)
+    end
+end
+
+function check_start_feasibility(single_blm, ctr, F, S::Type{MOI.LessThan{T}}, feasibility_tol) where T
+    f = MOI.get(single_blm, MOI.ConstraintFunction(), ctr)
+    LHS = MOIU.eval_variables(
+        x -> nothing_to_nan(MOI.get(single_blm, MOI.VariablePrimalStart(), x)),
+        f,
+    )
+    if isnan(LHS)
+        println("Constraint ", MOI.get(single_blm,MOI.ConstraintName(), ctr), " evaluates to NaN: ", ctr )
+        return
+    end
+
+    RHS = MOI.constant(MOI.get(single_blm, MOI.ConstraintSet(), ctr))
+
+    if LHS > RHS + feasibility_tol
+        println("Constraint ", MOI.get(single_blm,MOI.ConstraintName(), ctr), " evaluates to ", LHS, " but is expected to be less than ", RHS)
+        println("    ",f)
+    end
+end
+
+function check_start_feasibility(single_blm, ctr, F, S::Type{MOI.GreaterThan{T}}, feasibility_tol) where T
+    f = MOI.get(single_blm, MOI.ConstraintFunction(), ctr)
+    LHS = MOIU.eval_variables(
+        x -> nothing_to_nan(MOI.get(single_blm, MOI.VariablePrimalStart(), x)),
+        f,
+    )
+    if isnan(LHS)
+        println("Constraint ", MOI.get(single_blm,MOI.ConstraintName(), ctr), " evaluates to NaN: ", ctr )
+        return
+    end
+
+    RHS = MOI.constant(MOI.get(single_blm, MOI.ConstraintSet(), ctr))
+
+    if LHS < RHS - feasibility_tol
+        println("Constraint ", MOI.get(single_blm,MOI.ConstraintName(), ctr), " evaluates to ", LHS, " but is expected to be greater than ", RHS)
+    end
+end
+
+function check_start_feasibility(single_blm, ctr, F, S::Type{MOI.EqualTo{T}}, feasibility_tol) where T
+    f = MOI.get(single_blm, MOI.ConstraintFunction(), ctr)
+    LHS = MOIU.eval_variables(
+        x -> nothing_to_nan(MOI.get(single_blm, MOI.VariablePrimalStart(), x)),
+        f,
+    )
+    if isnan(LHS)
+        println("Constraint ", MOI.get(single_blm,MOI.ConstraintName(), ctr), " evaluates to NaN: ", ctr)
+        return
+    end
+
+    RHS = MOI.constant(MOI.get(single_blm, MOI.ConstraintSet(), ctr))
+
+    if abs(LHS - RHS) > feasibility_tol
+        println("Constraint ", MOI.get(single_blm,MOI.ConstraintName(), ctr), " evaluates to ", LHS, " but is expected to be equal to ", RHS)
+    end
+end
+
+function check_start_feasibility(single_blm, ctr, F, S::Type{MOI.ZeroOne}, feasibility_tol) end
+function check_start_feasibility(single_blm, ctr, F, S::Type{MOI.SOS1{T}}, feasibility_tol) where T end
 
 # Extra info
 
