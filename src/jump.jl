@@ -992,7 +992,7 @@ function iterative_optimize!(
             )
         end
 
-        if MOI.supports_incremental_interface(solver)
+        if false#MOI.supports_incremental_interface(solver)
             comp_idxs_in_solver = get_solver_comp_idxs(model, mode)
             termination_eps = iterative_optimize_solver(
                 solver,
@@ -1094,6 +1094,7 @@ function iterative_optimize_copy(
         set_iter_dual_starts(single_blm, solver, model.sblm_to_solver)
         set_iter_regularizations(single_blm, eps, mode.comp_idx_in_sblm)
 
+        print_lp(single_blm, joinpath(pwd(),"_model_storage", "model.mof.json"))
         MOI.empty!(solver)
         model.sblm_to_solver = MOI.copy_to(solver, single_blm)
 
